@@ -3,7 +3,6 @@ package nex
 import (
 	"crypto/md5"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/PretendoNetwork/nex-go/v2/constants"
@@ -39,7 +38,6 @@ type PRUDPConnection struct {
 	heartbeatTimer                      *time.Timer
 	pingKickTimer                       *time.Timer
 	StationURLs                         types.List[types.StationURL]
-	mutex                               *sync.Mutex
 }
 
 // Endpoint returns the PRUDP endpoint the connections socket is connected to
@@ -208,20 +206,6 @@ func (pc *PRUDPConnection) resetHeartbeat() {
 	}
 }
 
-// Lock locks the inner mutex for the Connection
-// This is used internally when reordering incoming fragmented packets to prevent
-// race conditions when multiple packets for the same fragmented message are processed at once
-func (pc *PRUDPConnection) Lock() {
-	pc.mutex.Lock()
-}
-
-// Unlock unlocks the inner mutex for the Connection
-// This is used internally when reordering incoming fragmented packets to prevent
-// race conditions when multiple packets for the same fragmented message are processed at once
-func (pc *PRUDPConnection) Unlock() {
-	pc.mutex.Unlock()
-}
-
 // Gets the incoming fragment buffer for the given substream
 func (pc *PRUDPConnection) GetIncomingFragmentBuffer(substreamID uint8) []byte {
 	buffer, ok := pc.incomingFragmentBuffers.Get(substreamID)
@@ -289,7 +273,6 @@ func NewPRUDPConnection(socket *SocketConnection) *PRUDPConnection {
 		outgoingPingSequenceIDCounter:       NewCounter[uint16](0),
 		incomingFragmentBuffers:             NewMutexMap[uint8, []byte](),
 		StationURLs:                         types.NewList[types.StationURL](),
-		mutex:                               &sync.Mutex{},
 	}
 
 	return pc

@@ -140,9 +140,6 @@ func (pep *PRUDPEndPoint) processPacket(packet PRUDPPacketInterface, socket *Soc
 		return connection
 	})
 
-	connection.Lock()
-	defer connection.Unlock()
-
 	packet.SetSender(connection)
 
 	if packet.HasFlag(constants.PacketFlagAck) || packet.HasFlag(constants.PacketFlagMultiAck) {

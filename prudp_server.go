@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"fmt"
 	"net"
-	"runtime"
 	"time"
 
 	"github.com/PretendoNetwork/nex-go/v2/constants"
@@ -50,47 +49,38 @@ func (ps *PRUDPServer) Listen(port int) {
 func (ps *PRUDPServer) ListenUDP(port int) {
 	ps.initPRUDPv1ConnectionSignatureKey()
 
-	udpAddress, err := net.ResolveUDPAddr("udp", fmt.Sprintf(":%d", port))
+	err := ps.listenAndServeUDP(fmt.Sprintf(":%d", port))
 	if err != nil {
+		// panic instead of log.Fatal() to keep backwards compat behaviour
 		panic(err)
+	}
+}
+
+func (ps *PRUDPServer) listenAndServeUDP(addr string) error {
+	udpAddress, err := net.ResolveUDPAddr("udp", addr)
+	if err != nil {
+		return fmt.Errorf("resolving udp addr: %v", err)
 	}
 
 	socket, err := net.ListenUDP("udp", udpAddress)
 	if err != nil {
-		panic(err)
+		return fmt.Errorf("listening udp: %w", err)
 	}
 
 	ps.udpSocket = socket
 
-	quit := make(chan struct{})
-
-	for i := 0; i < runtime.NumCPU(); i++ {
-		go ps.listenDatagram(quit)
-	}
-
-	<-quit
-}
-
-func (ps *PRUDPServer) listenDatagram(quit chan struct{}) {
-	var err error
 	buffer := make([]byte, 64000)
-
-	for err == nil {
-		var read int
-		var addr *net.UDPAddr
-
-		read, addr, err = ps.udpSocket.ReadFromUDP(buffer)
-		if err == nil {
-			packetData := make([]byte, read)
-			copy(packetData, buffer[:read])
-
-			err = ps.handleSocketMessage(packetData, addr, nil)
+	for {
+		read, addr, err := ps.udpSocket.ReadFromUDP(buffer)
+		if err != nil {
+			return fmt.Errorf("reading from udp socket: %w", err)
 		}
+
+		packetData := make([]byte, read)
+		copy(packetData, buffer[:read])
+
+		go ps.handleSocketMessage(packetData, addr, nil)
 	}
-
-	quit <- struct{}{}
-
-	panic(err)
 }
 
 // ListenWebSocket starts a PRUDP server on a given port using a WebSocket server
@@ -144,37 +134,37 @@ func (ps *PRUDPServer) handleSocketMessage(packetData []byte, address net.Addr, 
 	}
 
 	for _, packet := range packets {
-		go ps.processPacket(packet, address, webSocketConnection)
+		err := ps.processPacket(packet, address, webSocketConnection)
+		if err != nil {
+			logger.Warning(err.Error())
+			// XXX: should we return here, or do we need to handle all packets regardless of failure?
+			return err
+		}
 	}
 
 	return nil
 }
 
-func (ps *PRUDPServer) processPacket(packet PRUDPPacketInterface, address net.Addr, webSocketConnection *gws.Conn) {
+func (ps *PRUDPServer) processPacket(packet PRUDPPacketInterface, address net.Addr, webSocketConnection *gws.Conn) error {
 	if !ps.Endpoints.Has(packet.DestinationVirtualPortStreamID()) {
-		logger.Warningf("Client %s trying to connect to unbound PRUDPEndPoint %d", address.String(), packet.DestinationVirtualPortStreamID())
-		return
+		return fmt.Errorf("client %s trying to connect to unbound PRUDPEndPoint %d", address.String(), packet.DestinationVirtualPortStreamID())
 	}
 
 	endpoint, ok := ps.Endpoints.Get(packet.DestinationVirtualPortStreamID())
 	if !ok {
-		logger.Warningf("Client %s trying to connect to unbound PRUDPEndPoint %d", address.String(), packet.DestinationVirtualPortStreamID())
-		return
+		return fmt.Errorf("client %s trying to connect to unbound PRUDPEndPoint %d", address.String(), packet.DestinationVirtualPortStreamID())
 	}
 
 	if packet.DestinationVirtualPortStreamType() != packet.SourceVirtualPortStreamType() {
-		logger.Warningf("Client %s trying to use non matching destination and source stream types %d and %d", address.String(), packet.DestinationVirtualPortStreamType(), packet.SourceVirtualPortStreamType())
-		return
+		return fmt.Errorf("client %s trying to use non matching destination and source stream types %d and %d", address.String(), packet.DestinationVirtualPortStreamType(), packet.SourceVirtualPortStreamType())
 	}
 
 	if packet.DestinationVirtualPortStreamType() > constants.StreamTypeRelay {
-		logger.Warningf("Client %s trying to use invalid to destination stream type %d", address.String(), packet.DestinationVirtualPortStreamType())
-		return
+		return fmt.Errorf("client %s trying to use invalid to destination stream type %d", address.String(), packet.DestinationVirtualPortStreamType())
 	}
 
 	if packet.SourceVirtualPortStreamType() > constants.StreamTypeRelay {
-		logger.Warningf("Client %s trying to use invalid to source stream type %d", address.String(), packet.DestinationVirtualPortStreamType())
-		return
+		return fmt.Errorf("client %s trying to use invalid to source stream type %d", address.String(), packet.DestinationVirtualPortStreamType())
 	}
 
 	sourcePortNumber := packet.SourceVirtualPortStreamID()
@@ -189,12 +179,12 @@ func (ps *PRUDPServer) processPacket(packet PRUDPPacketInterface, address net.Ad
 	}
 
 	if invalidSourcePort {
-		logger.Warningf("Client %s trying to use invalid to source port number %d. Port number too large", address.String(), sourcePortNumber)
-		return
+		return fmt.Errorf("client %s trying to use invalid to source port number %d. Port number too large", address.String(), sourcePortNumber)
 	}
 
 	socket := NewSocketConnection(ps, address, webSocketConnection)
 	endpoint.processPacket(packet, socket)
+	return nil
 }
 
 // Send sends the packet to the packets sender
